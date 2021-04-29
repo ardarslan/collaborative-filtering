@@ -3,15 +3,16 @@ import random
 import pandas as pd
 import numpy as np
 
-def load_cf_data(file_path = '../../data/data_train.csv'):
+
+def load_cf_data(file_path = '../../../data/data_train.csv'):
     data_pd = pd.read_csv(file_path)
     users, movies = \
         [np.squeeze(arr) for arr in
          np.split(data_pd.Id.str.extract('r(\d+)_c(\d+)').values.astype(int) - 1, 2, axis=-1)]
     predictions = data_pd.Prediction.values
-    data = np.vstack((users, movies, predictions))
-    data_list = data.tolist()
-    return data_list
+    data = np.vstack((users, movies, predictions)).transpose()
+    return data
+
 
 def load_rating_data(file_path='ml-100k/u.data'):
     """
