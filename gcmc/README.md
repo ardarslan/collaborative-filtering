@@ -16,17 +16,22 @@ Credit: Jiani Zhang ([@jennyzhang0215](https://github.com/jennyzhang0215))
     - You will also need to run `python -m spacy download en_core_web_sm`
 
 ## How to run
+
 conda env create -f environment.yml
+
 conda activate cil_project
 
 module load gcc/6.3.0 cuda/10.1.243 cudnn/7.6.4 eth_proxy
+
 cd gcmc/
+
 bsub -n 4 -W 2:00 -o sample_test -R "rusage[mem=4096, ngpus_excl_p=1]" -R "select[gpu_mtotal0>=10240]" python main.py
 
 
 
 
 
+__________________________________________________
 
 ### Train with full-graph
 ml-100k, no feature
