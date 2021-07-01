@@ -18,17 +18,19 @@ args = SimpleNamespace(
     gcn_agg_accum="sum", # or "stack"
     gcn_out_units=75,
     gen_r_num_basis_func=2,
-    train_max_iter=2000,
+    train_max_iter=10000,
     train_log_interval=1,
     train_valid_interval=1,
     train_optimizer="adam",
     train_grad_clip=1.0,
-    train_lr=0.01,
-    train_min_lr=0.001,
+    train_lr=1e-3,
+    train_min_lr=1e-5,
     train_lr_decay_factor=0.5,
     train_decay_patience=50,
     train_early_stopping_patience=100,
     share_param=False,
+    mean_init=0.2,
+    std_init=0.001,
     seed=42)
 
 train(args)

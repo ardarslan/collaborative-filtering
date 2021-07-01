@@ -23,37 +23,22 @@ class Dataset(object):
     The training, validation and test set can be summarized as follows:
 
     training_enc_graph : training user-movie pairs + rating info
-    training_dec_graph : training user-movie pairs
     valid_enc_graph : training user-movie pairs + rating info
-    valid_dec_graph : validation user-movie pairs
     test_enc_graph : training user-movie pairs + validation user-movie pairs + rating info
-    test_dec_graph : test user-movie pairs
 
     Attributes
     ----------
     train_enc_graph : dgl.DGLHeteroGraph
         Encoder graph for training.
-    train_dec_graph : dgl.DGLHeteroGraph
-        Decoder graph for training.
     train_labels : torch.Tensor
-        The categorical label of each user-movie pair
-    train_truths : torch.Tensor
         The actual rating values of each user-movie pair
     valid_enc_graph : dgl.DGLHeteroGraph
         Encoder graph for validation.
-    valid_dec_graph : dgl.DGLHeteroGraph
-        Decoder graph for validation.
     valid_labels : torch.Tensor
-        The categorical label of each user-movie pair
-    valid_truths : torch.Tensor
         The actual rating values of each user-movie pair
     test_enc_graph : dgl.DGLHeteroGraph
         Encoder graph for test.
-    test_dec_graph : dgl.DGLHeteroGraph
-        Decoder graph for test.
     test_labels : torch.Tensor
-        The categorical label of each user-movie pair
-    test_truths : torch.Tensor
         The actual rating values of each user-movie pair
     user_feature : torch.Tensor
         User feature tensor. If None, representing an identity matrix.
@@ -86,38 +71,14 @@ class Dataset(object):
         self._valid_ratio = valid_ratio
         self._random_state = random_state
         self._data_path = data_path
-        # download and extract
-        # download_dir = get_download_dir()
-        # zip_file_path = '{}/{}.zip'.format(download_dir, name)
-        # download(_urls[name], path=zip_file_path)
-        # extract_archive(zip_file_path, '{}/{}'.format(download_dir, name))
-        # if name == 'ml-10m':
-        #     root_folder = 'ml-10M100K'
-        # else:
-        #     root_folder = name
-        # self._dir = os.path.join(download_dir, name, root_folder)
-        # print("Starting processing {} ...".format(self._name))
-        # self._load_raw_user_info()
-        # self._load_raw_movie_info()
-        # print('......')
-        # if self._name == 'ml-100k':
-        # self.all_train_rating_info = self._load_raw_rates(os.path.join(self._dir, 'u1.base'), '\t')
-        # self.test_rating_info = self._load_raw_rates(os.path.join(self._dir, 'u1.test'), '\t')
-        # self.all_rating_info = pd.concat([self.all_train_rating_info, self.test_rating_info])
+
         self.all_rating_info = self._extract_users_items_labels(pd.read_csv(self._data_path))
         self.all_train_rating_info, self.test_rating_info = train_test_split(
             self.all_rating_info,
             train_size=1-self._test_ratio,
             random_state=self._random_state
         )
-        # elif self._name == 'ml-1m' or self._name == 'ml-10m':
-        #     self.all_rating_info = self._load_raw_rates(os.path.join(self._dir, 'ratings.dat'), '::')
-        #     num_test = int(np.ceil(self.all_rating_info.shape[0] * self._test_ratio))
-        #     shuffled_idx = np.random.permutation(self.all_rating_info.shape[0])
-        #     self.test_rating_info = self.all_rating_info.iloc[shuffled_idx[: num_test]]
-        #     self.all_train_rating_info = self.all_rating_info.iloc[shuffled_idx[num_test: ]]
-        # else:
-        #     raise NotImplementedError
+
         print('......')
         num_valid = int(np.ceil(self.all_train_rating_info.shape[0] * self._valid_ratio))
         shuffled_idx = np.random.permutation(self.all_train_rating_info.shape[0])
@@ -125,22 +86,41 @@ class Dataset(object):
         self.train_rating_info = self.all_train_rating_info.iloc[shuffled_idx[num_valid: ]]
         self.possible_rating_values = np.unique(self.train_rating_info["rating"].values)
 
+        train_movies_rated_by_user_u = {}
+        for user, movie in zip(self.train_rating_info.user_id.tolist(), self.train_rating_info.movie_id.tolist()):
+            if user in train_movies_rated_by_user_u.keys():
+                train_movies_rated_by_user_u[user].append(movie + 1)
+            else:
+                train_movies_rated_by_user_u[user] = [movie + 1]
+
+        test_movies_rated_by_user_u = {}
+        for user, movie in zip(self.train_rating_info.user_id.tolist() + self.valid_rating_info.user_id.tolist(), self.train_rating_info.movie_id.tolist() + self.valid_rating_info.movie_id.tolist()):
+            if user in test_movies_rated_by_user_u.keys():
+                test_movies_rated_by_user_u[user].append(movie + 1)
+            else:
+                test_movies_rated_by_user_u[user] = [movie + 1]
+        test_largest_number_of_ratings_per_user = max(len(movies) for user, movies in test_movies_rated_by_user_u.items())
+
+        self.train_implicit_matrix = np.zeros(shape=(10000, test_largest_number_of_ratings_per_user))
+        for user_id, movies_rated_by_user_u in train_movies_rated_by_user_u.items():
+            self.train_implicit_matrix[user_id, :len(movies_rated_by_user_u)] = movies_rated_by_user_u
+        self.train_sqrt_of_number_of_movies_rated_by_each_user = th.FloatTensor(np.sqrt(np.count_nonzero(self.train_implicit_matrix, axis=1))).reshape(-1, 1).to(device)
+        self.train_implicit_matrix = th.LongTensor(self.train_implicit_matrix).to(device)
+        self.train_global_mean = self.train_rating_info.rating.mean()
+
+        self.test_implicit_matrix = np.zeros(shape=(10000, test_largest_number_of_ratings_per_user))
+        for user_id, movies_rated_by_user_u in test_movies_rated_by_user_u.items():
+            self.test_implicit_matrix[user_id, :len(movies_rated_by_user_u)] = movies_rated_by_user_u
+        self.test_sqrt_of_number_of_movies_rated_by_each_user = th.FloatTensor(np.sqrt(np.count_nonzero(self.test_implicit_matrix, axis=1))).reshape(-1, 1).to(device)
+        self.test_implicit_matrix = th.LongTensor(self.test_implicit_matrix).to(device)
+        self.test_global_mean = np.hstack((self.train_rating_info.rating.values, self.valid_rating_info.rating.values)).mean()
+
         print("All rating pairs : {}".format(self.all_rating_info.shape[0]))
         print("\tAll train rating pairs : {}".format(self.all_train_rating_info.shape[0]))
         print("\t\tTrain rating pairs : {}".format(self.train_rating_info.shape[0]))
         print("\t\tValid rating pairs : {}".format(self.valid_rating_info.shape[0]))
         print("\tTest rating pairs  : {}".format(self.test_rating_info.shape[0]))
 
-        # self.user_info = self._drop_unseen_nodes(orign_info=self.user_info,
-        #                                          cmp_col_name="id",
-        #                                          reserved_ids_set=set(self.all_rating_info["user_id"].values),
-        #                                          label="user")
-        # self.movie_info = self._drop_unseen_nodes(orign_info=self.movie_info,
-        #                                           cmp_col_name="id",
-        #                                           reserved_ids_set=set(self.all_rating_info["movie_id"].values),
-        #                                           label="movie")
-
-        # Map user/movie to the global id
         self.global_user_id_map = {ele: i for i, ele in enumerate(self.all_rating_info['user_id'].unique().tolist())}
         self.global_movie_id_map = {ele: i for i, ele in enumerate(self.all_rating_info['movie_id'].unique().tolist())}
         print('Total user number = {}, movie number = {}'.format(len(self.global_user_id_map),
@@ -163,24 +143,33 @@ class Dataset(object):
         valid_rating_pairs, valid_rating_values = self._generate_pair_value(self.valid_rating_info)
         test_rating_pairs, test_rating_values = self._generate_pair_value(self.test_rating_info)
 
-        def _make_labels(ratings):
-            labels = th.LongTensor(np.searchsorted(self.possible_rating_values, ratings)).to(device)
-            return labels
-
         self.train_enc_graph = self._generate_enc_graph(train_rating_pairs, train_rating_values, add_support=True)
-        self.train_dec_graph = self._generate_dec_graph(train_rating_pairs)
-        self.train_labels = _make_labels(train_rating_values)
-        self.train_truths = th.FloatTensor(train_rating_values).to(device)
-
         self.valid_enc_graph = self.train_enc_graph
-        self.valid_dec_graph = self._generate_dec_graph(valid_rating_pairs)
-        self.valid_labels = _make_labels(valid_rating_values)
-        self.valid_truths = th.FloatTensor(valid_rating_values).to(device)
-
         self.test_enc_graph = self._generate_enc_graph(all_train_rating_pairs, all_train_rating_values, add_support=True)
-        self.test_dec_graph = self._generate_dec_graph(test_rating_pairs)
-        self.test_labels = _make_labels(test_rating_values)
-        self.test_truths = th.FloatTensor(test_rating_values).to(device)
+
+        self.train_labels = np.zeros(shape=(1000, 10000))
+        self.train_mask = np.zeros(shape=(1000, 10000))
+        for train_user_id, train_movie_id, train_rating in zip(train_rating_pairs[0], train_rating_pairs[1], train_rating_values):
+            self.train_labels[train_movie_id, train_user_id] = train_rating
+            self.train_mask[train_movie_id, train_user_id] = 1.0
+        self.train_mask = th.FloatTensor(self.train_mask).to(device)
+        self.train_labels = th.FloatTensor(self.train_labels).to(device)
+
+        self.valid_labels = np.zeros(shape=(1000, 10000))
+        self.valid_mask = np.zeros(shape=(1000, 10000))
+        for valid_user_id, valid_movie_id, valid_rating in zip(valid_rating_pairs[0], valid_rating_pairs[1], valid_rating_values):
+            self.valid_labels[valid_movie_id, valid_user_id] = valid_rating
+            self.valid_mask[valid_movie_id, valid_user_id] = 1.0
+        self.valid_mask = th.FloatTensor(self.valid_mask).to(device)
+        self.valid_labels = th.FloatTensor(self.valid_labels).to(device)
+        
+        self.test_labels = np.zeros(shape=(1000, 10000))
+        self.test_mask = np.zeros(shape=(1000, 10000))
+        for test_user_id, test_movie_id, test_rating in zip(test_rating_pairs[0], test_rating_pairs[1], test_rating_values):
+            self.test_labels[test_movie_id, test_user_id] = test_rating
+            self.test_mask[test_movie_id, test_user_id] = 1.0
+        self.test_mask = th.FloatTensor(self.test_mask).to(device)
+        self.test_labels = th.FloatTensor(self.test_labels).to(device)
 
         def _npairs(graph):
             rst = 0
@@ -192,21 +181,12 @@ class Dataset(object):
         print("Train enc graph: \t#user:{}\t#movie:{}\t#pairs:{}".format(
             self.train_enc_graph.number_of_nodes('user'), self.train_enc_graph.number_of_nodes('movie'),
             _npairs(self.train_enc_graph)))
-        print("Train dec graph: \t#user:{}\t#movie:{}\t#pairs:{}".format(
-            self.train_dec_graph.number_of_nodes('user'), self.train_dec_graph.number_of_nodes('movie'),
-            self.train_dec_graph.number_of_edges()))
         print("Valid enc graph: \t#user:{}\t#movie:{}\t#pairs:{}".format(
             self.valid_enc_graph.number_of_nodes('user'), self.valid_enc_graph.number_of_nodes('movie'),
             _npairs(self.valid_enc_graph)))
-        print("Valid dec graph: \t#user:{}\t#movie:{}\t#pairs:{}".format(
-            self.valid_dec_graph.number_of_nodes('user'), self.valid_dec_graph.number_of_nodes('movie'),
-            self.valid_dec_graph.number_of_edges()))
         print("Test enc graph: \t#user:{}\t#movie:{}\t#pairs:{}".format(
             self.test_enc_graph.number_of_nodes('user'), self.test_enc_graph.number_of_nodes('movie'),
             _npairs(self.test_enc_graph)))
-        print("Test dec graph: \t#user:{}\t#movie:{}\t#pairs:{}".format(
-            self.test_dec_graph.number_of_nodes('user'), self.test_dec_graph.number_of_nodes('movie'),
-            self.test_dec_graph.number_of_edges()))
 
     def _extract_users_items_labels(self, data_pd):
         users, movies = \
@@ -275,15 +255,6 @@ class Dataset(object):
             graph.nodes['movie'].data.update({'ci' : movie_ci, 'cj' : movie_cj})
 
         return graph
-
-    def _generate_dec_graph(self, rating_pairs):
-        ones = np.ones_like(rating_pairs[0])
-        user_movie_ratings_coo = sp.coo_matrix(
-            (ones, rating_pairs),
-            shape=(self.num_user, self.num_movie), dtype=np.float32)
-        g = dgl.bipartite_from_scipy(user_movie_ratings_coo, utype='_U', etype='_E', vtype='_V')
-        return dgl.heterograph({('user', 'rate', 'movie'): g.edges()}, 
-                               num_nodes_dict={'user': self.num_user, 'movie': self.num_movie})
 
     @property
     def num_links(self):

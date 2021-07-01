@@ -11,62 +11,80 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 from data import Dataset
-from model import BiDecoder, GCMCLayer
+from model import GCMCLayer
 from utils import get_activation, get_optimizer, torch_total_param_num, torch_net_info, MetricLogger
 
 class Net(nn.Module):
     def __init__(self, args):
         super(Net, self).__init__()
         self._act = get_activation(args.model_activation)
-        self.encoder = GCMCLayer(args.rating_vals,
-                                 args.src_in_units,
-                                 args.dst_in_units,
-                                 args.gcn_agg_units,
-                                 args.gcn_out_units,
-                                 args.gcn_dropout,
-                                 args.gcn_agg_accum,
-                                 agg_act=self._act,
-                                 share_user_item_param=args.share_param,
-                                 device=args.device)
-        self.decoder = BiDecoder(in_units=args.gcn_out_units,
-                                 num_classes=len(args.rating_vals),
-                                 num_basis=args.gen_r_num_basis_func)
+        self.encoder_P_Q = GCMCLayer(args.rating_vals,
+                                     args.src_in_units,
+                                     args.dst_in_units,
+                                     args.gcn_agg_units,
+                                     args.gcn_out_units,
+                                     args.gcn_dropout,
+                                     args.gcn_agg_accum,
+                                     agg_act=self._act,
+                                     share_user_item_param=args.share_param,
+                                     device=args.device)
+        self.encoder_Bu = nn.Embedding(10000, 1)
+        nn.init.normal_(self.encoder_Bu.weight, mean=args.mean_init, std=args.std_init)
+        self.encoder_Bi = nn.Embedding(1000, 1)
+        nn.init.normal_(self.encoder_Bi.weight, mean=args.mean_init, std=args.std_init)
+        self.encoder_Y = nn.Embedding(1000 + 1, args.gcn_out_units, padding_idx=0)
+        nn.init.normal_(self.encoder_Y.weight, mean=args.mean_init, std=args.std_init)
 
-    def forward(self, enc_graph, dec_graph, ufeat, ifeat):
-        user_out, movie_out = self.encoder(
+    def forward(self, enc_graph, implicit_matrix, sqrt_of_number_of_movies_rated_by_each_user, global_mean, ufeat, ifeat):
+        p, q = self.encoder_P_Q(
             enc_graph,
             ufeat,
             ifeat)
-        pred_ratings = self.decoder(dec_graph, user_out, movie_out)
-        return pred_ratings
+        bu = self.encoder_Bu.weight
+        bi = self.encoder_Bi.weight
+        y = self.encoder_Y(implicit_matrix).sum(axis=1).div(sqrt_of_number_of_movies_rated_by_each_user)
+        gm = global_mean
+        result = q.matmul((p+y).T) + bi + bu.T + gm
+        return result
 
 def evaluate(args, net, dataset, segment='valid'):
-    possible_rating_values = dataset.possible_rating_values
-    nd_possible_rating_values = th.FloatTensor(possible_rating_values).to(args.device)
-
     if segment == "valid":
-        rating_values = dataset.valid_truths
+        labels = dataset.valid_labels
         enc_graph = dataset.valid_enc_graph
-        dec_graph = dataset.valid_dec_graph
+        implicit_matrix = dataset.train_implicit_matrix
+        sqrt_of_number_of_movies_rated_by_each_user = dataset.train_sqrt_of_number_of_movies_rated_by_each_user
+        global_mean = dataset.train_global_mean
+        mask = dataset.valid_mask
     elif segment == "test":
-        rating_values = dataset.test_truths
+        labels = dataset.test_labels
         enc_graph = dataset.test_enc_graph
-        dec_graph = dataset.test_dec_graph
+        implicit_matrix = dataset.test_implicit_matrix
+        sqrt_of_number_of_movies_rated_by_each_user = dataset.test_sqrt_of_number_of_movies_rated_by_each_user
+        global_mean = dataset.test_global_mean
+        mask = dataset.test_mask
     else:
         raise NotImplementedError
 
     # Evaluate RMSE
     net.eval()
     with th.no_grad():
-        pred_ratings = net(enc_graph, dec_graph,
-                           dataset.user_feature, dataset.movie_feature)
-    real_pred_ratings = (th.softmax(pred_ratings, dim=1) *
-                         nd_possible_rating_values.view(1, -1)).sum(dim=1)
-    rmse = ((real_pred_ratings - rating_values) ** 2.).mean().item()
-    rmse = np.sqrt(rmse)
+        predictions = net(enc_graph,
+                          implicit_matrix,
+                          sqrt_of_number_of_movies_rated_by_each_user,
+                          global_mean,
+                          dataset.user_feature,
+                          dataset.movie_feature)
+        sse = (mask * ((labels - predictions) ** 2)).sum()
+        mse = float((sse / mask.sum()).detach().cpu().numpy())
+        rmse = np.sqrt(mse)
+
     return rmse
 
 def train(args):
+    np.random.seed(args.seed)
+    th.manual_seed(args.seed)
+    if th.cuda.is_available():
+        th.cuda.manual_seed_all(args.seed)
     print(args)
     dataset = Dataset(device=args.device, symm=args.gcn_agg_norm_symm,
                       test_ratio=args.data_test_ratio, valid_ratio=args.data_valid_ratio,
@@ -80,15 +98,13 @@ def train(args):
     ### build the net
     net = Net(args=args)
     net = net.to(args.device)
-    nd_possible_rating_values = th.FloatTensor(dataset.possible_rating_values).to(args.device)
-    rating_loss_net = nn.CrossEntropyLoss()
     learning_rate = args.train_lr
     optimizer = get_optimizer(args.train_optimizer)(net.parameters(), lr=learning_rate)
     print("Loading network finished ...\n")
 
     ### perpare training data
-    train_gt_labels = dataset.train_labels
-    train_gt_ratings = dataset.train_truths
+    labels = dataset.train_labels
+    mask = dataset.train_mask
 
     ### prepare the logger
     train_loss_logger = MetricLogger(['iter', 'loss', 'rmse'], ['%d', '%.4f', '%.4f'],
@@ -107,11 +123,8 @@ def train(args):
     count_loss = 0
 
     dataset.train_enc_graph = dataset.train_enc_graph.int().to(args.device)
-    dataset.train_dec_graph = dataset.train_dec_graph.int().to(args.device)
     dataset.valid_enc_graph = dataset.train_enc_graph
-    dataset.valid_dec_graph = dataset.valid_dec_graph.int().to(args.device)
     dataset.test_enc_graph = dataset.test_enc_graph.int().to(args.device)
-    dataset.test_dec_graph = dataset.test_dec_graph.int().to(args.device)
 
     print("Start training ...")
     dur = []
@@ -119,9 +132,17 @@ def train(args):
         if iter_idx > 3:
             t0 = time.time()
         net.train()
-        pred_ratings = net(dataset.train_enc_graph, dataset.train_dec_graph,
-                           dataset.user_feature, dataset.movie_feature)
-        loss = rating_loss_net(pred_ratings, train_gt_labels).mean()
+        predictions = net(dataset.train_enc_graph,
+                          dataset.train_implicit_matrix,
+                          dataset.train_sqrt_of_number_of_movies_rated_by_each_user,
+                          dataset.train_global_mean,
+                          dataset.user_feature,
+                          dataset.movie_feature)
+        
+        sse = (mask * ((labels - predictions) ** 2)).sum()
+        mse = sse / mask.sum()
+        
+        loss = mse
         count_loss += loss.item()
         optimizer.zero_grad()
         loss.backward()
@@ -135,11 +156,8 @@ def train(args):
             print("Total #Param of net: %d" % (torch_total_param_num(net)))
             print(torch_net_info(net, save_path=os.path.join(args.save_dir, 'net%d.txt' % args.save_id)))
 
-        real_pred_ratings = (th.softmax(pred_ratings, dim=1) *
-                             nd_possible_rating_values.view(1, -1)).sum(dim=1)
-        rmse = ((real_pred_ratings - train_gt_ratings) ** 2).sum()
-        count_rmse += rmse.item()
-        count_num += pred_ratings.shape[0]
+        count_rmse += float(sse.detach().cpu().numpy())
+        count_num += mask.sum()
 
         if iter_idx % args.train_log_interval == 0:
             train_loss_logger.log(iter=iter_idx,
