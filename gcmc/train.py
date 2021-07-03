@@ -99,7 +99,8 @@ def train(args):
     net = Net(args=args)
     net = net.to(args.device)
     learning_rate = args.train_lr
-    optimizer = get_optimizer(args.train_optimizer)(net.parameters(), lr=learning_rate)
+    l2_reg = args.l2_reg
+    optimizer = get_optimizer(args.train_optimizer)(net.parameters(), lr=learning_rate, weight_decay=l2_reg)
     print("Loading network finished ...\n")
 
     ### perpare training data
@@ -202,6 +203,7 @@ def train(args):
     train_loss_logger.close()
     valid_loss_logger.close()
     test_loss_logger.close()
+    return best_iter, best_valid_rmse, best_test_rmse
 
 
 def config():
