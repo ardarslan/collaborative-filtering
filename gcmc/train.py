@@ -5,11 +5,10 @@ The script loads the full graph to the training device.
 import os, time
 import argparse
 import logging
-import random
-import string
 import numpy as np
 import torch as th
 import torch.nn as nn
+from torch.nn import functional as F
 from data import Dataset
 from model import GCMCLayer
 from utils import get_activation, get_optimizer, torch_total_param_num, torch_net_info, MetricLogger
@@ -18,45 +17,98 @@ class Net(nn.Module):
     def __init__(self, args):
         super(Net, self).__init__()
         self._act = get_activation(args.model_activation)
+        self.args = args
         self.encoder_P_Q = GCMCLayer(args.rating_vals,
                                      args.src_in_units,
                                      args.dst_in_units,
                                      args.gcn_agg_units,
-                                     args.gcn_out_units,
+                                     args.gcn_out_units * (1 + args.bayesian * 1),
                                      args.gcn_dropout,
                                      args.gcn_agg_accum,
                                      agg_act=self._act,
                                      share_user_item_param=args.share_param,
                                      device=args.device)
-        self.encoder_Bu = nn.Embedding(10000, 1)
-        nn.init.normal_(self.encoder_Bu.weight, mean=args.mean_init, std=args.std_init)
-        self.encoder_Bi = nn.Embedding(1000, 1)
-        nn.init.normal_(self.encoder_Bi.weight, mean=args.mean_init, std=args.std_init)
-        self.encoder_Y = nn.Embedding(1000 + 1, args.gcn_out_units, padding_idx=0)
-        nn.init.normal_(self.encoder_Y.weight, mean=args.mean_init, std=args.std_init)
+        self.encoder_Bu_mu = nn.Embedding(10000, 1)
+        nn.init.normal_(self.encoder_Bu_mu.weight, mean=args.mean_init, std=args.std_init)
+        self.encoder_Bi_mu = nn.Embedding(1000, 1)
+        nn.init.normal_(self.encoder_Bi_mu.weight, mean=args.mean_init, std=args.std_init)
+        self.encoder_Y_mu = nn.Embedding(1000 + 1, args.gcn_out_units, padding_idx=0)
+        nn.init.normal_(self.encoder_Y_mu.weight, mean=args.mean_init, std=args.std_init)
+
+        if args.bayesian:
+            self.encoder_Bu_logsigma = nn.Embedding(10000, 1)
+            nn.init.constant_(self.encoder_Bu_logsigma.weight, args.logsigma_constant_init)
+            self.encoder_Bi_logsigma = nn.Embedding(1000, 1)
+            nn.init.constant_(self.encoder_Bi_logsigma.weight, args.logsigma_constant_init)
 
     def forward(self, enc_graph, implicit_matrix, sqrt_of_number_of_movies_rated_by_each_user, global_mean, ufeat, ifeat):
-        p, q = self.encoder_P_Q(
+        p_mu, q_mu = self.encoder_P_Q(
             enc_graph,
             ufeat,
             ifeat)
-        bu = self.encoder_Bu.weight
-        bi = self.encoder_Bi.weight
-        y = self.encoder_Y(implicit_matrix).sum(axis=1).div(sqrt_of_number_of_movies_rated_by_each_user)
+        bu_mu = self.encoder_Bu_mu.weight
+        bi_mu = self.encoder_Bi_mu.weight
+        y_mu = self.encoder_Y_mu(implicit_matrix).sum(axis=1).div(sqrt_of_number_of_movies_rated_by_each_user)
         gm = global_mean
-        result = q.matmul((p+y).T) + bi + bu.T + gm
+        if self.args.bayesian:
+            p_mu, p_logsigma = th.split(p_mu, int(p_mu.shape[1] / 2), dim=1)
+            p_mu = p_mu + F.softplus(p_logsigma) * th.normal(mean=th.zeros_like(p_mu), std=th.ones_like(p_mu))
+            
+            q_mu, q_logsigma = th.split(q_mu, int(q_mu.shape[1] / 2), dim=1)
+            q_mu = q_mu + F.softplus(q_logsigma) * th.normal(mean=th.zeros_like(q_mu), std=th.ones_like(q_mu))
+            
+            bu_mu = bu_mu + F.softplus(self.encoder_Bu_logsigma.weight) * th.normal(mean=th.zeros_like(bu_mu), std=th.ones_like(bu_mu))
+            bi_mu = bi_mu + F.softplus(self.encoder_Bi_logsigma.weight) * th.normal(mean=th.zeros_like(bi_mu), std=th.ones_like(bi_mu))
+
+        result = q_mu.matmul((p_mu+y_mu).T) + bi_mu + bu_mu.T + gm
         return result
+    
+    def kl_divergence(self, enc_graph, ufeat, ifeat):
+        '''
+        Computes the KL divergence between the priors and posteriors of all embeddings.
+        '''
+        p_mu, q_mu = self.encoder_P_Q(
+            enc_graph,
+            ufeat,
+            ifeat
+        )
+        p_mu, p_logsigma = th.split(p_mu, int(p_mu.shape[1] / 2), dim=1)
+        q_mu, q_logsigma = th.split(q_mu, int(q_mu.shape[1] / 2), dim=1)
+        kl_loss = self._kl_divergence(self.encoder_Bu_mu.weight, self.encoder_Bu_logsigma.weight)
+        kl_loss += self._kl_divergence(self.encoder_Bi_mu.weight, self.encoder_Bi_logsigma.weight)
+        kl_loss += self._kl_divergence(p_mu, p_logsigma)
+        kl_loss += self._kl_divergence(q_mu, q_logsigma)
+        # kl_loss += self._kl_divergence(self.encoder_Y_mu.weight, self.encoder_Y_logsigma.weight)
+        return kl_loss
+
+    def _kl_divergence(self, mu, logsigma):
+        '''
+        Computes the KL divergence between one Gaussian posterior
+        and the Gaussian prior.
+        '''
+        sigma = F.softplus(logsigma)
+        params = mu + sigma * th.normal(mean=th.zeros_like(mu), std=th.ones_like(mu))
+        
+        p_prior_dist = th.distributions.normal.Normal(self.args.prior_mu, self.args.prior_sigma)
+        p_prior_log_prob = p_prior_dist.log_prob(params)
+        
+        q_posterior_dist = th.distributions.normal.Normal(mu, sigma)
+        q_posterior_log_prob = q_posterior_dist.log_prob(params)
+        
+        kl = th.sum(q_posterior_log_prob - p_prior_log_prob)
+
+        return kl
 
 def evaluate(args, net, dataset, segment='valid'):
     if segment == "valid":
-        labels = dataset.valid_labels
+        labels = dataset.labels
         enc_graph = dataset.valid_enc_graph
         implicit_matrix = dataset.train_implicit_matrix
         sqrt_of_number_of_movies_rated_by_each_user = dataset.train_sqrt_of_number_of_movies_rated_by_each_user
         global_mean = dataset.train_global_mean
         mask = dataset.valid_mask
     elif segment == "test":
-        labels = dataset.test_labels
+        labels = dataset.labels
         enc_graph = dataset.test_enc_graph
         implicit_matrix = dataset.test_implicit_matrix
         sqrt_of_number_of_movies_rated_by_each_user = dataset.test_sqrt_of_number_of_movies_rated_by_each_user
@@ -68,12 +120,19 @@ def evaluate(args, net, dataset, segment='valid'):
     # Evaluate RMSE
     net.eval()
     with th.no_grad():
-        predictions = net(enc_graph,
-                          implicit_matrix,
-                          sqrt_of_number_of_movies_rated_by_each_user,
-                          global_mean,
-                          dataset.user_feature,
-                          dataset.movie_feature)
+        predictions = None
+        for i in range(args.num_forward_passes):
+            current_predictions = net(enc_graph,
+                                      implicit_matrix,
+                                      sqrt_of_number_of_movies_rated_by_each_user,
+                                      global_mean,
+                                      dataset.user_feature,
+                                      dataset.movie_feature)
+            if i == 0:
+                predictions = current_predictions
+            else:
+                predictions = (predictions * i + current_predictions) / (i+1)
+
         sse = (mask * ((labels - predictions) ** 2)).sum()
         mse = float((sse / mask.sum()).detach().cpu().numpy())
         rmse = np.sqrt(mse)
@@ -99,12 +158,12 @@ def train(args):
     net = Net(args=args)
     net = net.to(args.device)
     learning_rate = args.train_lr
-    l2_reg = args.l2_reg
-    optimizer = get_optimizer(args.train_optimizer)(net.parameters(), lr=learning_rate, weight_decay=l2_reg)
+    kl_coefficient = args.kl_coefficient
+    optimizer = get_optimizer(args.train_optimizer)(net.parameters(), lr=learning_rate, weight_decay=0.0)
     print("Loading network finished ...\n")
 
     ### perpare training data
-    labels = dataset.train_labels
+    labels = dataset.labels
     mask = dataset.train_mask
 
     ### prepare the logger
@@ -133,22 +192,33 @@ def train(args):
         if iter_idx > 3:
             t0 = time.time()
         net.train()
-        predictions = net(dataset.train_enc_graph,
-                          dataset.train_implicit_matrix,
-                          dataset.train_sqrt_of_number_of_movies_rated_by_each_user,
-                          dataset.train_global_mean,
-                          dataset.user_feature,
-                          dataset.movie_feature)
+        predictions = None
+        for i in range(args.num_forward_passes):
+            current_predictions = net(dataset.train_enc_graph,
+                                      dataset.train_implicit_matrix,
+                                      dataset.train_sqrt_of_number_of_movies_rated_by_each_user,
+                                      dataset.train_global_mean,
+                                      dataset.user_feature,
+                                      dataset.movie_feature)
+            if i == 0:
+                predictions = current_predictions
+            else:
+                predictions = (predictions * i + current_predictions) / (i+1)
+            if not args.bayesian:
+                break
         
         sse = (mask * ((labels - predictions) ** 2)).sum()
         mse = sse / mask.sum()
         
-        loss = mse
+        loss = mse + args.l2_reg * th.norm(net.encoder_Y_mu.weight, 2)
+        if args.bayesian:
+            loss += kl_coefficient * net.kl_divergence(dataset.train_enc_graph, dataset.user_feature, dataset.movie_feature)
         count_loss += loss.item()
         optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(net.parameters(), args.train_grad_clip)
         optimizer.step()
+        del predictions
 
         if iter_idx > 3:
             dur.append(time.time() - t0)
@@ -189,6 +259,7 @@ def train(args):
                     logging.info("Early stopping threshold reached. Stop training.")
                     break
                 if no_better_valid > args.train_decay_patience:
+                    kl_coefficient = kl_coefficient * 0.5
                     new_lr = max(learning_rate * args.train_lr_decay_factor, args.train_min_lr)
                     if new_lr < learning_rate:
                         learning_rate = new_lr

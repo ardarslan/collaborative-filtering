@@ -147,29 +147,26 @@ class Dataset(object):
         self.valid_enc_graph = self.train_enc_graph
         self.test_enc_graph = self._generate_enc_graph(all_train_rating_pairs, all_train_rating_values, add_support=True)
 
-        self.train_labels = np.zeros(shape=(1000, 10000))
+        self.labels = np.zeros(shape=(1000, 10000))
         self.train_mask = np.zeros(shape=(1000, 10000))
-        for train_user_id, train_movie_id, train_rating in zip(train_rating_pairs[0], train_rating_pairs[1], train_rating_values):
-            self.train_labels[train_movie_id, train_user_id] = train_rating
-            self.train_mask[train_movie_id, train_user_id] = 1.0
-        self.train_mask = th.FloatTensor(self.train_mask).to(device)
-        self.train_labels = th.FloatTensor(self.train_labels).to(device)
-
-        self.valid_labels = np.zeros(shape=(1000, 10000))
         self.valid_mask = np.zeros(shape=(1000, 10000))
-        for valid_user_id, valid_movie_id, valid_rating in zip(valid_rating_pairs[0], valid_rating_pairs[1], valid_rating_values):
-            self.valid_labels[valid_movie_id, valid_user_id] = valid_rating
-            self.valid_mask[valid_movie_id, valid_user_id] = 1.0
-        self.valid_mask = th.FloatTensor(self.valid_mask).to(device)
-        self.valid_labels = th.FloatTensor(self.valid_labels).to(device)
-        
-        self.test_labels = np.zeros(shape=(1000, 10000))
         self.test_mask = np.zeros(shape=(1000, 10000))
+        for train_user_id, train_movie_id, train_rating in zip(train_rating_pairs[0], train_rating_pairs[1], train_rating_values):
+            self.labels[train_movie_id, train_user_id] = train_rating
+            self.train_mask[train_movie_id, train_user_id] = 1
+            
+        for valid_user_id, valid_movie_id, valid_rating in zip(valid_rating_pairs[0], valid_rating_pairs[1], valid_rating_values):
+            self.labels[valid_movie_id, valid_user_id] = valid_rating
+            self.valid_mask[valid_movie_id, valid_user_id] = 1
+
         for test_user_id, test_movie_id, test_rating in zip(test_rating_pairs[0], test_rating_pairs[1], test_rating_values):
-            self.test_labels[test_movie_id, test_user_id] = test_rating
-            self.test_mask[test_movie_id, test_user_id] = 1.0
-        self.test_mask = th.FloatTensor(self.test_mask).to(device)
-        self.test_labels = th.FloatTensor(self.test_labels).to(device)
+            self.labels[test_movie_id, test_user_id] = test_rating
+            self.test_mask[test_movie_id, test_user_id] = 1
+        
+        self.labels = th.IntTensor(self.labels).to(device)
+        self.train_mask = th.IntTensor(self.train_mask).to(device)
+        self.valid_mask = th.IntTensor(self.valid_mask).to(device)
+        self.test_mask = th.IntTensor(self.test_mask).to(device)
 
         def _npairs(graph):
             rst = 0
