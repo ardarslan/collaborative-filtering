@@ -3,6 +3,7 @@ import csv
 import re
 from pathlib import Path
 import torch as th
+import pandas as pd
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
@@ -83,3 +84,16 @@ def get_optimizer(opt):
 
 def to_etype_name(rating):
     return str(rating).replace('.', '_')
+
+
+def prepare_submission_file(predictions, args):
+    sample_submission = pd.read_csv(f"{args.data_path}/sampleSubmission.csv", engine='python')
+    id_column = sample_submission['Id']
+    rs = id_column.apply(lambda x: int(x.split("_")[0].split("r")[-1])).tolist()
+    cs = id_column.apply(lambda x: int(x.split("_c")[-1])).tolist()
+    data = []
+    for i, j in zip(rs, cs):
+        idx = f"r{i}_c{j}"
+        data.append((idx, predictions[j-1, i-1]))
+    df = pd.DataFrame(data, columns=['Id', 'Prediction'])
+    df.to_csv(f"{args.save_dir}/{args.save_id}_submission.csv", index=False)

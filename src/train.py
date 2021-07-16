@@ -1,17 +1,14 @@
-"""Training GCMC model on the MovieLens data set.
-
-The script loads the full graph to the training device.
-"""
 import os, time
-import argparse
 import logging
+import random
 import numpy as np
 import torch as th
 import torch.nn as nn
 from torch.nn import functional as F
 from data import Dataset
-from model import GCMCLayer
-from utils import get_activation, get_optimizer, torch_total_param_num, torch_net_info, MetricLogger
+from graph_conv import GCMCLayer
+from utils import get_activation, get_optimizer, torch_total_param_num, \
+    torch_net_info, prepare_submission_file, MetricLogger
 
 class Net(nn.Module):
     def __init__(self, args):
@@ -78,7 +75,6 @@ class Net(nn.Module):
         kl_loss += self._kl_divergence(self.encoder_Bi_mu.weight, self.encoder_Bi_logsigma.weight)
         kl_loss += self._kl_divergence(p_mu, p_logsigma)
         kl_loss += self._kl_divergence(q_mu, q_logsigma)
-        # kl_loss += self._kl_divergence(self.encoder_Y_mu.weight, self.encoder_Y_logsigma.weight)
         return kl_loss
 
     def _kl_divergence(self, mu, logsigma):
@@ -120,18 +116,26 @@ def evaluate(args, net, dataset, segment='valid'):
     # Evaluate RMSE
     net.eval()
     with th.no_grad():
-        predictions = None
-        for i in range(args.num_forward_passes):
-            current_predictions = net(enc_graph,
-                                      implicit_matrix,
-                                      sqrt_of_number_of_movies_rated_by_each_user,
-                                      global_mean,
-                                      dataset.user_feature,
-                                      dataset.movie_feature)
-            if i == 0:
-                predictions = current_predictions
-            else:
-                predictions = (predictions * i + current_predictions) / (i+1)
+        if args.bayesian:
+            predictions = None
+            for i in range(args.num_forward_passes):
+                current_predictions = net(enc_graph,
+                                        implicit_matrix,
+                                        sqrt_of_number_of_movies_rated_by_each_user,
+                                        global_mean,
+                                        dataset.user_feature,
+                                        dataset.movie_feature)
+                if i == 0:
+                    predictions = current_predictions
+                else:
+                    predictions = (predictions * i + current_predictions) / (i+1)
+        else:
+            predictions = net(enc_graph,
+                              implicit_matrix,
+                              sqrt_of_number_of_movies_rated_by_each_user,
+                              global_mean,
+                              dataset.user_feature,
+                              dataset.movie_feature)
 
         sse = (mask * ((labels - predictions) ** 2)).sum()
         mse = float((sse / mask.sum()).detach().cpu().numpy())
@@ -140,14 +144,17 @@ def evaluate(args, net, dataset, segment='valid'):
     return rmse
 
 def train(args):
+    random.seed(args.seed)
     np.random.seed(args.seed)
     th.manual_seed(args.seed)
     if th.cuda.is_available():
         th.cuda.manual_seed_all(args.seed)
     print(args)
+    os.makedirs(args.save_dir, exist_ok=True)
     dataset = Dataset(device=args.device, symm=args.gcn_agg_norm_symm,
                       test_ratio=args.data_test_ratio, valid_ratio=args.data_valid_ratio,
-                      random_state=args.seed, data_path=args.data_path)
+                      random_state=args.seed, data_path=args.data_path,
+                      make_submission=args.make_submission)
     print("Loading data finished ...\n")
 
     args.src_in_units = dataset.user_feature_shape[1]
@@ -159,7 +166,11 @@ def train(args):
     net = net.to(args.device)
     learning_rate = args.train_lr
     kl_coefficient = args.kl_coefficient
-    optimizer = get_optimizer(args.train_optimizer)(net.parameters(), lr=learning_rate, weight_decay=0.0)
+    make_submission = args.make_submission
+    if args.bayesian:
+        optimizer = get_optimizer(args.train_optimizer)(net.parameters(), lr=learning_rate, weight_decay=0.0)
+    else:
+        optimizer = get_optimizer(args.train_optimizer)(net.parameters(), lr=learning_rate, weight_decay=args.l2_reg)
     print("Loading network finished ...\n")
 
     ### perpare training data
@@ -169,49 +180,66 @@ def train(args):
     ### prepare the logger
     train_loss_logger = MetricLogger(['iter', 'loss', 'rmse'], ['%d', '%.4f', '%.4f'],
                                      os.path.join(args.save_dir, 'train_loss%d.csv' % args.save_id))
-    valid_loss_logger = MetricLogger(['iter', 'rmse'], ['%d', '%.4f'],
-                                     os.path.join(args.save_dir, 'valid_loss%d.csv' % args.save_id))
-    test_loss_logger = MetricLogger(['iter', 'rmse'], ['%d', '%.4f'],
-                                    os.path.join(args.save_dir, 'test_loss%d.csv' % args.save_id))
+    if not make_submission:
+        valid_loss_logger = MetricLogger(['iter', 'rmse'], ['%d', '%.4f'],
+                                        os.path.join(args.save_dir, 'valid_loss%d.csv' % args.save_id))
+        test_loss_logger = MetricLogger(['iter', 'rmse'], ['%d', '%.4f'],
+                                        os.path.join(args.save_dir, 'test_loss%d.csv' % args.save_id))
+
+    dataset.train_enc_graph = dataset.train_enc_graph.int().to(args.device)
+    if not make_submission:
+        dataset.valid_enc_graph = dataset.train_enc_graph
+        dataset.test_enc_graph = dataset.test_enc_graph.int().to(args.device)
 
     ### declare the loss information
-    best_valid_rmse = np.inf
-    no_better_valid = 0
-    best_iter = -1
     count_rmse = 0
     count_num = 0
     count_loss = 0
-
-    dataset.train_enc_graph = dataset.train_enc_graph.int().to(args.device)
-    dataset.valid_enc_graph = dataset.train_enc_graph
-    dataset.test_enc_graph = dataset.test_enc_graph.int().to(args.device)
+    
+    if not make_submission:
+        best_valid_rmse = np.inf
+        no_better_valid = 0
+        best_iter = -1
 
     print("Start training ...")
     dur = []
+    if not make_submission:
+        lr_schedule = {}
+        kl_coeff_schedule = {}
+    else:
+        lr_schedule = args.lr_schedule
+        kl_coeff_schedule = args.kl_coeff_schedule
     for iter_idx in range(1, args.train_max_iter):
         if iter_idx > 3:
             t0 = time.time()
         net.train()
-        predictions = None
-        for i in range(args.num_forward_passes):
-            current_predictions = net(dataset.train_enc_graph,
-                                      dataset.train_implicit_matrix,
-                                      dataset.train_sqrt_of_number_of_movies_rated_by_each_user,
-                                      dataset.train_global_mean,
-                                      dataset.user_feature,
-                                      dataset.movie_feature)
-            if i == 0:
-                predictions = current_predictions
-            else:
-                predictions = (predictions * i + current_predictions) / (i+1)
-            if not args.bayesian:
-                break
+        if args.bayesian:
+            predictions = None
+            for i in range(args.num_forward_passes):
+                current_predictions = net(dataset.train_enc_graph,
+                                        dataset.train_implicit_matrix,
+                                        dataset.train_sqrt_of_number_of_movies_rated_by_each_user,
+                                        dataset.train_global_mean,
+                                        dataset.user_feature,
+                                        dataset.movie_feature)
+                if i == 0:
+                    predictions = current_predictions
+                else:
+                    predictions = (predictions * i + current_predictions) / (i+1)
+        else:
+            predictions = net(dataset.train_enc_graph,
+                              dataset.train_implicit_matrix,
+                              dataset.train_sqrt_of_number_of_movies_rated_by_each_user,
+                              dataset.train_global_mean,
+                              dataset.user_feature,
+                              dataset.movie_feature)
         
         sse = (mask * ((labels - predictions) ** 2)).sum()
         mse = sse / mask.sum()
         
-        loss = mse + args.l2_reg * th.norm(net.encoder_Y_mu.weight, 2)
+        loss = mse
         if args.bayesian:
+            loss += args.l2_reg * th.norm(net.encoder_Y_mu.weight, 2)
             loss += kl_coefficient * net.kl_divergence(dataset.train_enc_graph, dataset.user_feature, dataset.movie_feature)
         count_loss += loss.item()
         optimizer.zero_grad()
@@ -239,7 +267,15 @@ def train(args):
             count_rmse = 0
             count_num = 0
 
-        if iter_idx % args.train_valid_interval == 0:
+        if make_submission and iter_idx in lr_schedule.keys():
+            learning_rate = lr_schedule[iter_idx]
+            for p in optimizer.param_groups:
+                p['lr'] = learning_rate
+        
+        if make_submission and args.bayesian and iter_idx in kl_coeff_schedule.keys():
+            kl_coefficient = kl_coeff_schedule[iter_idx]
+
+        if not make_submission and iter_idx % args.train_valid_interval == 0:
             valid_rmse = evaluate(args=args, net=net, dataset=dataset, segment='valid')
             valid_loss_logger.log(iter = iter_idx, rmse = valid_rmse)
             logging_str += ',\tVal RMSE={:.4f}'.format(valid_rmse)
@@ -259,70 +295,50 @@ def train(args):
                     logging.info("Early stopping threshold reached. Stop training.")
                     break
                 if no_better_valid > args.train_decay_patience:
-                    kl_coefficient = kl_coefficient * 0.5
+                    if args.bayesian:
+                        kl_coefficient = kl_coefficient * 0.5
+                        kl_coeff_schedule[iter_idx] = kl_coefficient
                     new_lr = max(learning_rate * args.train_lr_decay_factor, args.train_min_lr)
                     if new_lr < learning_rate:
                         learning_rate = new_lr
+                        lr_schedule[iter_idx] = learning_rate
                         logging.info("\tChange the LR to %g" % new_lr)
                         for p in optimizer.param_groups:
                             p['lr'] = learning_rate
                         no_better_valid = 0
         if iter_idx  % args.train_log_interval == 0:
             print(logging_str)
-    print('Best Iter Idx={}, Best Valid RMSE={:.4f}, Best Test RMSE={:.4f}'.format(
-        best_iter, best_valid_rmse, best_test_rmse))
+    
     train_loss_logger.close()
-    valid_loss_logger.close()
-    test_loss_logger.close()
-    return best_iter, best_valid_rmse, best_test_rmse
-
-
-def config():
-    parser = argparse.ArgumentParser(description='GCMC')
-    parser.add_argument('--seed', default=123, type=int)
-    parser.add_argument('--device', default='0', type=int,
-                        help='Running device. E.g `--device 0`, if using cpu, set `--device -1`')
-    parser.add_argument('--save_dir', type=str, help='The saving directory')
-    parser.add_argument('--save_id', type=int, help='The saving log id')
-    parser.add_argument('--silent', action='store_true')
-    parser.add_argument('--data_test_ratio', type=float, default=0.1) ## for ml-100k the test ration is 0.2
-    parser.add_argument('--data_valid_ratio', type=float, default=0.1)
-    parser.add_argument('--model_activation', type=str, default="leaky")
-    parser.add_argument('--gcn_dropout', type=float, default=0.7)
-    parser.add_argument('--gcn_agg_norm_symm', type=bool, default=True)
-    parser.add_argument('--gcn_agg_units', type=int, default=500)
-    parser.add_argument('--gcn_agg_accum', type=str, default="sum")
-    parser.add_argument('--gcn_out_units', type=int, default=75)
-    parser.add_argument('--gen_r_num_basis_func', type=int, default=2)
-    parser.add_argument('--train_max_iter', type=int, default=2000)
-    parser.add_argument('--train_log_interval', type=int, default=1)
-    parser.add_argument('--train_valid_interval', type=int, default=1)
-    parser.add_argument('--train_optimizer', type=str, default="adam")
-    parser.add_argument('--train_grad_clip', type=float, default=1.0)
-    parser.add_argument('--train_lr', type=float, default=0.01)
-    parser.add_argument('--train_min_lr', type=float, default=0.001)
-    parser.add_argument('--train_lr_decay_factor', type=float, default=0.5)
-    parser.add_argument('--train_decay_patience', type=int, default=50)
-    parser.add_argument('--train_early_stopping_patience', type=int, default=100)
-    parser.add_argument('--share_param', default=False, action='store_true')
-
-    args = parser.parse_args()
-    args.device = th.device(args.device) if args.device >= 0 else th.device('cpu')
-
-    ### configure save_fir to save all the info
-    if args.save_id is None:
-        args.save_id = np.random.randint(20)
-    args.save_dir = os.path.join("log", args.save_dir)
-    if not os.path.isdir(args.save_dir):
-        os.makedirs(args.save_dir)
-
-    return args
-
-
-if __name__ == '__main__':
-    args = config()
-    np.random.seed(args.seed)
-    th.manual_seed(args.seed)
-    if th.cuda.is_available():
-        th.cuda.manual_seed_all(args.seed)
-    train(args)
+    if make_submission:
+        net.eval()
+        if args.bayesian:
+            predictions = []
+            with th.no_grad():
+                for i in range(args.num_forward_passes):
+                    current_predictions = net(dataset.train_enc_graph,
+                                              dataset.train_implicit_matrix,
+                                              dataset.train_sqrt_of_number_of_movies_rated_by_each_user,
+                                              dataset.train_global_mean,
+                                              dataset.user_feature,
+                                              dataset.movie_feature)
+                    predictions.append(current_predictions.cpu().detach().numpy())
+            predictions = np.array(predictions)
+            predictions = np.mean(predictions, axis=0)
+        else:
+            with th.no_grad():
+                predictions = net(dataset.train_enc_graph,
+                                  dataset.train_implicit_matrix,
+                                  dataset.train_sqrt_of_number_of_movies_rated_by_each_user,
+                                  dataset.train_global_mean,
+                                  dataset.user_feature,
+                                  dataset.movie_feature).cpu().detach().numpy()
+        prepare_submission_file(predictions, args)
+    else:
+        print("LR Schedule:", lr_schedule)
+        print("KL Schedule:", kl_coeff_schedule)
+        print('Best Iter Idx={}, Best Valid RMSE={:.4f}, Best Test RMSE={:.4f}'.format(
+            best_iter, best_valid_rmse, best_test_rmse))
+        valid_loss_logger.close()
+        test_loss_logger.close()
+        return best_iter, best_valid_rmse, best_test_rmse, str(lr_schedule), str(kl_coeff_schedule)
