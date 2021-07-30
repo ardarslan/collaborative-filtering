@@ -4,7 +4,7 @@ from time import time
 
 start = time()
 
-model = "gc_svdpp" # "bayesian_gc_svdpp" or "gc_svdpp"
+model = "bayesian_gc_svdpp" # "bayesian_gc_svdpp" or "gc_svdpp"
 device = "cuda" # "cuda" or "cpu"
 data_path = "/cluster/home/aarslan/cil/data"
 save_dir = "/cluster/home/aarslan/cil/save_dir"

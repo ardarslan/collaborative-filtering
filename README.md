@@ -44,7 +44,7 @@ Open a new terminal and verify that conda is installed.
     save_dir should be the path where the predictions will be saved to.
 
 
-### 5. Submit the training task to GPU with the following commands (indicated time necessary to reproduce results)
+### 5. Submit the training task to GPU with the following commands (indicated time is necessary to reproduce results)
 
     cd src/
 
