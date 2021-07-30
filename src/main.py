@@ -4,15 +4,13 @@ from time import time
 
 start = time()
 
-model = "bayesian_gc_svdpp" # "bayesian_gc_svdpp" or "gc_svdpp"
+model = "gc_svdpp" # "bayesian_gc_svdpp" or "gc_svdpp"
 device = "cuda" # "cuda" or "cpu"
-make_submission = True
 data_path = "/cluster/home/aarslan/cil/data"
 save_dir = "/cluster/home/aarslan/cil/save_dir"
 
 assert model in ["bayesian_gc_svdpp", "gc_svdpp"]
 assert device in ["cpu", "cuda"]
-assert make_submission in [True, False]
 
 if model == "bayesian_gc_svdpp":
     train_lr = 0.01
@@ -56,6 +54,7 @@ elif model == "gc_svdpp":
     save_id = 1
 
 args = SimpleNamespace(
+    model=model,
     device=device,
     data_path=data_path,
     save_dir=save_dir,
@@ -87,7 +86,7 @@ args = SimpleNamespace(
     lr_schedule=lr_schedule,
     kl_coeff_schedule=kl_coeff_schedule,
     l2_reg=l2_reg,
-    make_submission=make_submission,
+    make_submission=True,
     bayesian=bayesian,
     num_forward_passes=num_forward_passes,
     kl_coefficient=kl_coefficient,

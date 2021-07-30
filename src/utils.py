@@ -1,10 +1,9 @@
 import os
 import csv
-import re
 from pathlib import Path
-import torch as th
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt; plt.rc('axes', labelsize=14)
 import torch.nn as nn
 import torch.optim as optim
 from collections import OrderedDict
@@ -96,12 +95,61 @@ def prepare_submission_file(predictions, args):
         idx = f"r{i}_c{j}"
         data.append((idx, predictions[j-1, i-1]))
     df = pd.DataFrame(data, columns=['Id', 'Prediction'])
-    df.to_csv(f"{args.save_dir}/{args.save_id}_submission.csv", index=False)
+    df.to_csv(f"{args.save_dir}/{args.model}_submission.csv", index=False)
 
 
-def save_stds(preds_std, Bi_std, Bu_std, P_std, Q_std, args):
-    np.save(f"{args.save_dir}/{args.save_id}_preds_std.npy", preds_std)
-    np.save(f"{args.save_dir}/{args.save_id}_Bi_std.npy", Bi_std)
-    np.save(f"{args.save_dir}/{args.save_id}_Bu_std.npy", Bu_std)
-    np.save(f"{args.save_dir}/{args.save_id}_P_std.npy", P_std)
-    np.save(f"{args.save_dir}/{args.save_id}_Q_std.npy", Q_std)
+def extract_users_items_labels(data_pd):
+    users, movies = \
+        [np.squeeze(arr) for arr in np.split(data_pd.Id.str.extract('r(\d+)_c(\d+)').values.astype(int) - 1, 2, axis=-1)]
+    ratings = data_pd.Prediction.values
+    return pd.DataFrame.from_dict({"user_id": users, "movie_id": movies, "rating": ratings})
+
+
+def plot_uncertainties(Bi_std, Bu_std, Q_std, P_std, preds_std, args):
+    Bi_std = Bi_std.ravel()
+    Bu_std = Bu_std.ravel()
+    Q_std = Q_std.mean(axis=1)
+    P_std = P_std.mean(axis=1)
+    preds_std_user = preds_std.mean(axis=0)
+    preds_std_movie = preds_std.mean(axis=1)
+
+    train_data = extract_users_items_labels(pd.read_csv(f"{args.data_path}/data_train.csv"))
+
+    user_counts = train_data.groupby("user_id").count().reset_index(drop=True)[["movie_id"]].values.ravel()
+    movie_counts = train_data.groupby("movie_id").count().reset_index(drop=True)[["user_id"]].values.ravel()
+
+    plt.figure(figsize=(18, 6))
+    plt.scatter(user_counts, P_std)
+    plt.xlabel("Number of movies rated by the user")
+    plt.ylabel("Std of 'P' parameters of the user")
+    plt.savefig(f"{args.save_dir}/P_std.png")
+
+    plt.figure(figsize=(18, 6))
+    plt.scatter(movie_counts, Q_std)
+    plt.xlabel("Number of users who rated the movie")
+    plt.ylabel("Std of 'Q' parameters of the movie")
+    plt.savefig(f"{args.save_dir}/Q_std.png")
+
+    plt.figure(figsize=(18, 6))
+    plt.scatter(user_counts, Bu_std)
+    plt.xlabel("Number of movies rated by the user")
+    plt.ylabel("Std of 'Bu' parameters of the user")
+    plt.savefig(f"{args.save_dir}/Bu_std.png")
+
+    plt.figure(figsize=(18, 6))
+    plt.scatter(movie_counts, Bi_std)
+    plt.xlabel("Number of users who rated the movie")
+    plt.ylabel("Std of 'Bi' parameters of the movie")
+    plt.savefig(f"{args.save_dir}/Bi_std.png")
+
+    plt.figure(figsize=(18, 6))
+    plt.scatter(user_counts, preds_std_user)
+    plt.xlabel("Number of movies rated by the user")
+    plt.ylabel("Std of predictions for the user")
+    plt.savefig(f"{args.save_dir}/Preds_user_std.png")
+
+    plt.figure(figsize=(18, 6))
+    plt.scatter(movie_counts, preds_std_movie)
+    plt.xlabel("Number of users who rated the movie")
+    plt.ylabel("Std of predictions for the movie")
+    plt.savefig(f"{args.save_dir}/Preds_movie_std.png")

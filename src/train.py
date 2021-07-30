@@ -8,7 +8,7 @@ from torch.nn import functional as F
 from data import Dataset
 from graph_conv import GCMCLayer
 from utils import get_activation, get_optimizer, torch_total_param_num, \
-    torch_net_info, prepare_submission_file, save_stds, MetricLogger
+    torch_net_info, prepare_submission_file, plot_uncertainties, MetricLogger
 
 class Net(nn.Module):
     def __init__(self, args):
@@ -338,7 +338,7 @@ def train(args):
                 P_sigma = F.softplus(P_logsigma).cpu().detach().numpy()
                 Q_sigma = F.softplus(Q_logsigma).cpu().detach().numpy()
 
-            save_stds(predictions_std, Bi_sigma, Bu_sigma, P_sigma, Q_sigma, args)
+            plot_uncertainties(Bi_sigma, Bu_sigma, Q_sigma, P_sigma, predictions_std, args)
             prepare_submission_file(predictions_mean, args)
         else:
             with th.no_grad():

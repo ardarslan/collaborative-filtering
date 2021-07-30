@@ -1,11 +1,10 @@
 import numpy as np
 import pandas as pd
-import scipy.sparse as sp
 import torch as th
 
 import dgl
 from sklearn.model_selection import train_test_split
-from utils import to_etype_name
+from utils import to_etype_name, extract_users_items_labels
 
 class Dataset(object):
     """
@@ -66,7 +65,7 @@ class Dataset(object):
         self._data_path = data_path
         self._make_submission = make_submission
 
-        self.all_rating_info = self._extract_users_items_labels(pd.read_csv(self._data_path + "/data_train.csv"))
+        self.all_rating_info = extract_users_items_labels(pd.read_csv(self._data_path + "/data_train.csv"))
         self.possible_rating_values = np.unique(self.all_rating_info["rating"].values)
 
         if self._make_submission:
@@ -161,12 +160,6 @@ class Dataset(object):
             r = to_etype_name(r)
             rst += graph.number_of_edges(str(r))
         return rst
-
-    def _extract_users_items_labels(self, data_pd):
-        users, movies = \
-            [np.squeeze(arr) for arr in np.split(data_pd.Id.str.extract('r(\d+)_c(\d+)').values.astype(int) - 1, 2, axis=-1)]
-        ratings = data_pd.Prediction.values
-        return pd.DataFrame.from_dict({"user_id": users, "movie_id": movies, "rating": ratings})
 
     def _generate_pair_value(self, rating_info):
         rating_pairs = (np.array([self.global_user_id_map[ele] for ele in rating_info["user_id"]],
