@@ -11,6 +11,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from data import Dataset
 from graph_conv import GCMCLayer
+import pickle
 from utils import get_activation, get_optimizer, torch_total_param_num, \
     torch_net_info, prepare_submission_file, MetricLogger
 
@@ -53,11 +54,11 @@ class Net(nn.Module):
                 self.last_y_mus = th.zeros((temp_size, 10000, 30))
                 self.last_res = th.zeros((temp_size, 1000, 10000))
 
-                self.var_eval_logger = MetricLogger(['iter','p_mu', 'q_mu', 'bu_mu', 'bi_mu', 'y_mu', 'res'], ['%d','%.8f', '%.8f', '%.8f', '%.8f', '%.8f', '%.8f'],
+                self.var_eval_logger = MetricLogger(['iter', 'mode','p_mu', 'q_mu', 'bu_mu', 'bi_mu', 'y_mu', 'res'], ['%d','%s','%.8f', '%.8f', '%.8f', '%.8f', '%.8f', '%.8f'],
                                          os.path.join(args.save_dir, 'var_eval%d.csv' %args.save_id))
-                self.var_train_logger = MetricLogger(['iter','p_mu', 'q_mu', 'bu_mu', 'bi_mu', 'y_mu', 'res'], ['%d','%.8f', '%.8f', '%.8f', '%.8f', '%.8f', '%.8f'],
+                self.var_train_logger = MetricLogger(['iter','mode','p_mu', 'q_mu', 'bu_mu', 'bi_mu', 'y_mu', 'res'], ['%d','%s','%.8f', '%.8f', '%.8f', '%.8f', '%.8f', '%.8f'],
                                          os.path.join(args.save_dir, 'var_train%d.csv' %args.save_id))
-        self.is_eval = False 
+        self.eval_mode = "optim" 
 
     def forward(self, enc_graph, implicit_matrix, sqrt_of_number_of_movies_rated_by_each_user, global_mean, ufeat, ifeat, i_forw_pass=0):
         p_mu, q_mu = self.encoder_P_Q(
@@ -79,7 +80,17 @@ class Net(nn.Module):
             bu_mu = bu_mu + F.softplus(self.encoder_Bu_logsigma.weight) * th.normal(mean=th.zeros_like(bu_mu), std=th.ones_like(bu_mu))
             bi_mu = bi_mu + F.softplus(self.encoder_Bi_logsigma.weight) * th.normal(mean=th.zeros_like(bi_mu), std=th.ones_like(bi_mu))
 
-
+            """
+            print()
+            print("shapes")
+            print("p_mu ", p_mu.shape)
+            print("p_logsigma ", p_logsigma.shape)
+            print("q_mu ", q_mu.shape)
+            print("q_logsigma ", q_logsigma.shape)
+            print("bu_mu ", bu_mu.shape)
+            print("bi_mu ", bi_mu.shape)
+            exit()
+            """
         result = q_mu.matmul((p_mu+y_mu).T) + bi_mu + bu_mu.T + gm
 
         #var
@@ -100,13 +111,27 @@ class Net(nn.Module):
                     temp_y_mu = th.mean(th.var(self.last_y_mus, dim=0, unbiased=self.args.var_unbiased))
                     temp_res = th.mean(th.var(self.last_res, dim=0, unbiased=self.args.var_unbiased))
 
-                    if self.is_eval:
+                    if self.eval_mode == "valid" or self.eval_mode == "test":
                         logger = self.var_eval_logger
                     else:
                         logger = self.var_train_logger
 
-                    logger.log(iter=self.var_iter, p_mu=temp_p_mu, q_mu=temp_q_mu, bu_mu=temp_bu_mu, bi_mu=temp_bi_mu, y_mu=temp_y_mu, res=temp_res)
+                    logger.log(iter=self.var_iter, mode=self.eval_mode, p_mu=temp_p_mu, q_mu=temp_q_mu, bu_mu=temp_bu_mu, bi_mu=temp_bi_mu, y_mu=temp_y_mu, res=temp_res)
 
+                     
+                    #                might need to change to this
+                    #                                   if i == 0:
+                    #                    predictions = current_predictions
+                    #                else:
+                    #                    predictions = (predictions * i + current_predictions) / (i+1)
+                    
+                    if not self.eval_mode=="optim":
+                        # save stuff
+                        temp_name_list = zip(['p_mu', 'p_logsigma','p_soft', 'q_mu', 'q_logsigma','q_soft', 'bu_mu','bu_soft', 'bi_mu', 'bi_soft'],[p_mu , p_logsigma,F.softplus(p_logsigma), q_mu, q_logsigma,F.softplus(q_logsigma), bu_mu, F.softplus(self.encoder_Bu_logsigma.weight),bi_mu, F.softplus(self.encoder_Bi_logsigma.weight)] )
+                        for name, elem in temp_name_list:
+                            filepath = os.path.join(self.args.save_dir, '%s_%s.sav' % (self.eval_mode, name))
+                            with open(filepath, 'wb') as f:
+                                pickle.dump(elem.cpu().detach().numpy(), f)
 
         return result
     
@@ -146,7 +171,7 @@ class Net(nn.Module):
         return kl
 
 def evaluate(args, net, dataset, segment='valid'):
-    net.is_eval = True
+    net.eval_mode = segment
     if segment == "valid":
         labels = dataset.labels
         enc_graph = dataset.valid_enc_graph
@@ -161,6 +186,13 @@ def evaluate(args, net, dataset, segment='valid'):
         sqrt_of_number_of_movies_rated_by_each_user = dataset.test_sqrt_of_number_of_movies_rated_by_each_user
         global_mean = dataset.test_global_mean
         mask = dataset.test_mask
+    elif segment == "train":
+        labels = dataset.labels
+        enc_graph = dataset.train_enc_graph
+        implicit_matrix = dataset.train_implicit_matrix
+        sqrt_of_number_of_movies_rated_by_each_user = dataset.train_sqrt_of_number_of_movies_rated_by_each_user
+        global_mean = dataset.train_global_mean
+        mask = dataset.train_mask
     else:
         raise NotImplementedError
 
@@ -192,10 +224,11 @@ def evaluate(args, net, dataset, segment='valid'):
         sse = (mask * ((labels - predictions) ** 2)).sum()
         mse = float((sse / mask.sum()).detach().cpu().numpy())
         rmse = np.sqrt(mse)
-        net.is_eval=False
+
     return rmse
 
 def train(args):
+    
     random.seed(args.seed)
     np.random.seed(args.seed)
     th.manual_seed(args.seed)
@@ -256,6 +289,7 @@ def train(args):
         best_iter = -1
 
     print("Start training ...")
+    net.eval_mode = "optim"
     dur = []
     if not make_submission:
         lr_schedule = {}
@@ -372,8 +406,8 @@ def train(args):
     
     train_loss_logger.close()
     if make_submission: #final prediction
-        net.is_eval=True
         net.eval()
+        net.eval_mode = "final"
         if args.bayesian:
             predictions = []
             with th.no_grad():
@@ -390,11 +424,36 @@ def train(args):
             #var
             if net.args.var_log:
                 if net.args.var_unbiased:
-                    var_res = no.mean(np.var(predictions, axis=0, ddof=1))
+                    var_res = np.mean(np.var(predictions, axis=0, ddof=1))
                 else: 
                     var_res = np.mean(np.var(predictions, axis=0, ddof=0))
+
+                rated_movies_per_user = (dataset.train_mask).sum(dim=0).cpu().detach().numpy()
+                rated_users_per_movie = (dataset.train_mask).sum(dim=1).cpu().detach().numpy()
+                print("per user shape ", rated_movies_per_user.shape)
+                print("per movie shape ", rated_users_per_movie.shape)
+                filepath = os.path.join(args.save_dir, '%s.sav' % ("rated_movies_per_user"))
+                with open(filepath, 'wb') as f:
+                    pickle.dump(rated_movies_per_user, f)
+                filepath = os.path.join(args.save_dir, '%s.sav' % ("rated_users_per_movie"))
+                with open(filepath, 'wb') as f:
+                    pickle.dump(rated_users_per_movie, f)
+
+                filepath = os.path.join(args.save_dir, 'predictions.sav')
+                with open(filepath, 'wb') as f:
+                    pickle.dump(predictions, f)
+
+
                 print('var res ', var_res)
+                #evaluate(args=args, net=net, dataset=dataset, segment='valid')
+                #evaluate(args=args, net=net, dataset=dataset, segment='test')
+                evaluate(args=args, net=net, dataset=dataset, segment='train')
+
+
+
             predictions = np.mean(predictions, axis=0)
+            
+
 
         else:
             with th.no_grad():
@@ -406,7 +465,7 @@ def train(args):
                                   dataset.movie_feature,
                                   args.num_forward_passes).cpu().detach().numpy()
         prepare_submission_file(predictions, args)
-        net.is_eval=False
+
     else:
         print("LR Schedule:", lr_schedule)
         print("KL Schedule:", kl_coeff_schedule)

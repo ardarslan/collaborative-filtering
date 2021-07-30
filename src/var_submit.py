@@ -8,7 +8,7 @@ model = "bayesian_gc_svdpp" # "bayesian_gc_svdpp" or "gc_svdpp"
 device = "cuda" # "cuda" or "cpu"
 make_submission = True
 data_path = "/cluster/scratch/swiesner/data"
-save_dir = "/cluster/scratch/swiesner/save_dir"
+save_dir = "/cluster/scratch/swiesner/save_dir/new"
 
 assert model in ["bayesian_gc_svdpp", "gc_svdpp"]
 assert device in ["cpu", "cuda"]
@@ -73,6 +73,7 @@ args = SimpleNamespace(
     train_max_iter=train_max_iter,
     train_log_interval=1,
     var_log=True,
+    var_log_iter=False, # log mean of each iteration
     var_unbiased=False, # True -> variance calculated with Bessel's correction
     train_valid_interval=1,
     train_optimizer="adam",
