@@ -7,7 +7,7 @@ Group name on Kaggle: Bayesians
 ## Reproducing results
 
 
-1. Install conda if it's not already installed
+### 1. Install conda if it's not already installed
 
 Download installer from here: https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 
@@ -23,21 +23,21 @@ Run the installer:
 Open a new terminal and verify that conda is installed.
 
 
-2. Create the environment
+### 2. Create the environment
 
     ```
     conda env create -f environment.yml
     ```
 
 
-3. Activate the environment
+### 3. Activate the environment
 
     ```
     conda activate cil_project
     ```
 
 
-4. Make the configurations in main.py
+### 4. Make the configurations in main.py
 
     model should be "bayesian_gc_svdpp" or "gc_svdpp". Use "gc_svdpp" for Non-Bayesian SVD++ model which uses Graph Convolution Networks. Use "bayesian_gc_svdpp" for the Bayesian model which also calculates parameter and prediction uncertainties.
 
@@ -48,7 +48,7 @@ Open a new terminal and verify that conda is installed.
     save_dir should be the path where the predictions will be saved to.
 
 
-5. Submit the training task to GPU with the following commands (indicated time necessary to reproduce results)
+### 5. Submit the training task to GPU with the following commands (indicated time necessary to reproduce results)
 
     ```
     cd src/
