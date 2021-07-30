@@ -1,6 +1,5 @@
 *.DS_Store
 *__pycache__*
 *.ipynb_checkpoints
-temp/*
-leonhard*
-src/sample_test
+src/logs
+save_dir*
