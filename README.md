@@ -25,16 +25,12 @@ Open a new terminal and verify that conda is installed.
 
 ### 2. Create the environment
 
-    ```
     conda env create -f environment.yml
-    ```
 
 
 ### 3. Activate the environment
 
-    ```
     conda activate cil_project
-    ```
 
 
 ### 4. Make the configurations in main.py
