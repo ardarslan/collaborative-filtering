@@ -9,11 +9,8 @@ Group name on Kaggle: Bayesians
 
 1. Install conda if it's not already installed
 
-Download installer from here:
+Download installer from here: https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 
-    ```
-    https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-    ```
 
 Give execution permission to the installer:
 
