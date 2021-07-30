@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 from train import train
+from time import time
+
+start = time()
 
 model = "bayesian_gc_svdpp" # "bayesian_gc_svdpp" or "gc_svdpp"
 device = "cuda" # "cuda" or "cpu"
@@ -94,3 +97,6 @@ args = SimpleNamespace(
 )
 
 train(args)
+
+end = time()
+print(f"Took {end - start} seconds.")

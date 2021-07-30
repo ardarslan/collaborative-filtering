@@ -97,3 +97,11 @@ def prepare_submission_file(predictions, args):
         data.append((idx, predictions[j-1, i-1]))
     df = pd.DataFrame(data, columns=['Id', 'Prediction'])
     df.to_csv(f"{args.save_dir}/{args.save_id}_submission.csv", index=False)
+
+
+def save_stds(preds_std, Bi_std, Bu_std, P_std, Q_std, args):
+    np.save(f"{args.save_dir}/{args.save_id}_preds_std.npy", preds_std)
+    np.save(f"{args.save_dir}/{args.save_id}_Bi_std.npy", Bi_std)
+    np.save(f"{args.save_dir}/{args.save_id}_Bu_std.npy", Bu_std)
+    np.save(f"{args.save_dir}/{args.save_id}_P_std.npy", P_std)
+    np.save(f"{args.save_dir}/{args.save_id}_Q_std.npy", Q_std)

@@ -8,7 +8,7 @@ from torch.nn import functional as F
 from data import Dataset
 from graph_conv import GCMCLayer
 from utils import get_activation, get_optimizer, torch_total_param_num, \
-    torch_net_info, prepare_submission_file, MetricLogger
+    torch_net_info, prepare_submission_file, save_stds, MetricLogger
 
 class Net(nn.Module):
     def __init__(self, args):
@@ -323,17 +323,32 @@ def train(args):
                                               dataset.user_feature,
                                               dataset.movie_feature)
                     predictions.append(current_predictions.cpu().detach().numpy())
-            predictions = np.array(predictions)
-            predictions = np.mean(predictions, axis=0)
+            predictions_mean = np.array(predictions)
+            predictions_mean = np.mean(predictions, axis=0)
+            predictions_std = np.std(predictions, axis=0)
+
+            with th.no_grad():
+                Bi_sigma = F.softplus(net.encoder_Bi_logsigma.weight).cpu().detach().numpy()
+                Bu_sigma = F.softplus(net.encoder_Bu_logsigma.weight).cpu().detach().numpy()
+                p, q = net.encoder_P_Q(dataset.train_enc_graph,
+                                    dataset.user_feature,
+                                    dataset.movie_feature)
+                _, P_logsigma = th.split(p, int(p.shape[1] / 2), dim=1)
+                _, Q_logsigma = th.split(q, int(q.shape[1] / 2), dim=1)
+                P_sigma = F.softplus(P_logsigma).cpu().detach().numpy()
+                Q_sigma = F.softplus(Q_logsigma).cpu().detach().numpy()
+
+            save_stds(predictions_std, Bi_sigma, Bu_sigma, P_sigma, Q_sigma, args)
+            prepare_submission_file(predictions_mean, args)
         else:
             with th.no_grad():
-                predictions = net(dataset.train_enc_graph,
-                                  dataset.train_implicit_matrix,
-                                  dataset.train_sqrt_of_number_of_movies_rated_by_each_user,
-                                  dataset.train_global_mean,
-                                  dataset.user_feature,
-                                  dataset.movie_feature).cpu().detach().numpy()
-        prepare_submission_file(predictions, args)
+                predictions_mean = net(dataset.train_enc_graph,
+                                       dataset.train_implicit_matrix,
+                                       dataset.train_sqrt_of_number_of_movies_rated_by_each_user,
+                                       dataset.train_global_mean,
+                                       dataset.user_feature,
+                                       dataset.movie_feature).cpu().detach().numpy()
+                prepare_submission_file(predictions_mean, args)
     else:
         print("LR Schedule:", lr_schedule)
         print("KL Schedule:", kl_coeff_schedule)
