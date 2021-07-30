@@ -14,15 +14,11 @@ Download installer from here: https://repo.anaconda.com/miniconda/Miniconda3-lat
 
 Give execution permission to the installer:
 
-    ```
     chmod +x Miniconda3-latest-Linux-x86_64.sh
-    ```
 
 Run the installer:
 
-    ```
     ./Miniconda3-latest-Linux-x86_64.sh
-    ```
 
 Open a new terminal and verify that conda is installed.
 
