@@ -46,10 +46,8 @@ Open a new terminal and verify that conda is installed.
 
 ### 5. Submit the training task to GPU with the following commands (indicated time necessary to reproduce results)
 
-    ```
     cd src/
 
     bsub -n 4 -W 24:00 -o logs -R "rusage[mem=4096, ngpus_excl_p=1]" -R "select[gpu_mtotal0>=10240]" python main.py
-    ```
 
 Predictions and uncertainty plots (if Bayesian mode is active) will be saved under the directory "save_dir".
