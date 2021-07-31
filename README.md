@@ -51,3 +51,5 @@ Open a new terminal and verify that conda is installed.
     bsub -n 4 -W 24:00 -o logs -R "rusage[mem=4096, ngpus_excl_p=1]" -R "select[gpu_mtotal0>=10240]" python main.py
 
 Predictions and uncertainty plots (if Bayesian mode is active) will be saved under the directory "save_dir".
+
+**Please refer to the README in src/baselines to reproduce the baseline results.**
