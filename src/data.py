@@ -51,7 +51,12 @@ class Dataset(object):
         Ratio of test data
     valid_ratio : float, optional
         Ratio of validation data
-
+    random_state : int, optional
+        Random state which will be used for splitting the dataset.
+    data_path: str
+        Path for the data
+    make_submission: bool, optional
+        If True, there is no validation and test splits.
     """
     def __init__(self, device, symm=True,
                  test_ratio=0.1, valid_ratio=0.1,

@@ -1,13 +1,13 @@
 from types import SimpleNamespace
 from train import train
-from time import time
 
-start = time()
+
+# To run the code make these 4 configurations:
 
 model = "bayesian_gc_svdpp" # "bayesian_gc_svdpp" or "gc_svdpp"
 device = "cuda" # "cuda" or "cpu"
-data_path = "/cluster/home/aarslan/cil/data"
-save_dir = "/cluster/home/aarslan/cil/save_dir"
+data_path = "../data" # Data path
+save_dir = "../save_dir" # Path where the outputs will be saved to.
 
 assert model in ["bayesian_gc_svdpp", "gc_svdpp"]
 assert device in ["cpu", "cuda"]
@@ -96,6 +96,3 @@ args = SimpleNamespace(
 )
 
 train(args)
-
-end = time()
-print(f"Took {end - start} seconds.")

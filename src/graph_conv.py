@@ -22,6 +22,8 @@ class GCMCGraphConv(nn.Module):
     device: str, optional
         Which device to put data in. Useful in mix_cpu_gpu training and
         multi-gpu training
+    dropout_rate: float, optional
+        Dropout to be used in GCMC layers.
     """
     def __init__(self,
                  in_feats,

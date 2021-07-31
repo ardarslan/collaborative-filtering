@@ -12,6 +12,12 @@ from utils import get_activation, get_optimizer, torch_total_param_num, \
 
 class Net(nn.Module):
     def __init__(self, args):
+        """
+        if args.bayesian == False, this class is SVD++ which uses 
+        GCN for encoding user-item interactions.
+        if args.bayesian == True, then this class is Bayesian version of the
+        network mentioned above.
+        """
         super(Net, self).__init__()
         self._act = get_activation(args.model_activation)
         self.args = args
@@ -39,6 +45,9 @@ class Net(nn.Module):
             nn.init.constant_(self.encoder_Bi_logsigma.weight, args.logsigma_constant_init)
 
     def forward(self, enc_graph, implicit_matrix, sqrt_of_number_of_movies_rated_by_each_user, global_mean, ufeat, ifeat):
+        """
+        Forward pass of the network.
+        """
         p_mu, q_mu = self.encoder_P_Q(
             enc_graph,
             ufeat,
@@ -96,6 +105,10 @@ class Net(nn.Module):
         return kl
 
 def evaluate(args, net, dataset, segment='valid'):
+    """
+    Evaluates the model on the given segment of the dataset.
+    Segment is "valid" or "test".
+    """
     if segment == "valid":
         labels = dataset.labels
         enc_graph = dataset.valid_enc_graph
@@ -118,6 +131,8 @@ def evaluate(args, net, dataset, segment='valid'):
     with th.no_grad():
         if args.bayesian:
             predictions = None
+            # Do forward pass for "num_forward_passes" times and take the mean of the
+            # predictions.
             for i in range(args.num_forward_passes):
                 current_predictions = net(enc_graph,
                                         implicit_matrix,
@@ -144,11 +159,16 @@ def evaluate(args, net, dataset, segment='valid'):
     return rmse
 
 def train(args):
+    """
+    Executes the full training pipeline.
+    """
+    # Set seeds.
     random.seed(args.seed)
     np.random.seed(args.seed)
     th.manual_seed(args.seed)
     if th.cuda.is_available():
         th.cuda.manual_seed_all(args.seed)
+
     print(args)
     os.makedirs(args.save_dir, exist_ok=True)
     dataset = Dataset(device=args.device, symm=args.gcn_agg_norm_symm,
@@ -161,23 +181,23 @@ def train(args):
     args.dst_in_units = dataset.movie_feature_shape[1]
     args.rating_vals = dataset.possible_rating_values
 
-    ### build the net
+    ### Build the net
     net = Net(args=args)
     net = net.to(args.device)
     learning_rate = args.train_lr
     kl_coefficient = args.kl_coefficient
     make_submission = args.make_submission
     if args.bayesian:
+        # Don't use weight decay if Bayesian mode is active.
         optimizer = get_optimizer(args.train_optimizer)(net.parameters(), lr=learning_rate, weight_decay=0.0)
     else:
         optimizer = get_optimizer(args.train_optimizer)(net.parameters(), lr=learning_rate, weight_decay=args.l2_reg)
     print("Loading network finished ...\n")
 
-    ### perpare training data
     labels = dataset.labels
     mask = dataset.train_mask
 
-    ### prepare the logger
+    # Create loggers to save loss and rmse information.
     train_loss_logger = MetricLogger(['iter', 'loss', 'rmse'], ['%d', '%.4f', '%.4f'],
                                      os.path.join(args.save_dir, 'train_loss%d.csv' % args.save_id))
     if not make_submission:
@@ -191,7 +211,6 @@ def train(args):
         dataset.valid_enc_graph = dataset.train_enc_graph
         dataset.test_enc_graph = dataset.test_enc_graph.int().to(args.device)
 
-    ### declare the loss information
     count_rmse = 0
     count_num = 0
     count_loss = 0
@@ -268,19 +287,23 @@ def train(args):
             count_num = 0
 
         if make_submission and iter_idx in lr_schedule.keys():
+            # Use the learning rate schedule we found during train-validation phase.
             learning_rate = lr_schedule[iter_idx]
             for p in optimizer.param_groups:
                 p['lr'] = learning_rate
         
         if make_submission and args.bayesian and iter_idx in kl_coeff_schedule.keys():
+            # Use the KL coefficient schedule we found during train-validation phase.
             kl_coefficient = kl_coeff_schedule[iter_idx]
 
         if not make_submission and iter_idx % args.train_valid_interval == 0:
+            # Evaluate model on validation set.
             valid_rmse = evaluate(args=args, net=net, dataset=dataset, segment='valid')
             valid_loss_logger.log(iter = iter_idx, rmse = valid_rmse)
             logging_str += ',\tVal RMSE={:.4f}'.format(valid_rmse)
 
             if valid_rmse < best_valid_rmse:
+                # Evaluate model on test set.
                 best_valid_rmse = valid_rmse
                 no_better_valid = 0
                 best_iter = iter_idx
@@ -296,10 +319,12 @@ def train(args):
                     break
                 if no_better_valid > args.train_decay_patience:
                     if args.bayesian:
+                        # Reduce KL coefficient to half.
                         kl_coefficient = kl_coefficient * 0.5
                         kl_coeff_schedule[iter_idx] = kl_coefficient
                     new_lr = max(learning_rate * args.train_lr_decay_factor, args.train_min_lr)
                     if new_lr < learning_rate:
+                        # Reduce learning rate.
                         learning_rate = new_lr
                         lr_schedule[iter_idx] = learning_rate
                         logging.info("\tChange the LR to %g" % new_lr)
@@ -311,8 +336,12 @@ def train(args):
     
     train_loss_logger.close()
     if make_submission:
+        # Produce predictions to be saved to disk.
         net.eval()
         if args.bayesian:
+            # Do forward pass for args.num_forward_passes times and take their mean.
+            # Also calculate standard deviation of predictions so that we can report
+            # uncertainties in predictions.
             predictions = []
             with th.no_grad():
                 for i in range(args.num_forward_passes):
@@ -328,6 +357,7 @@ def train(args):
             predictions_std = np.std(predictions, axis=0)
 
             with th.no_grad():
+                # Extract the parameter uncertainties from network.
                 Bi_sigma = F.softplus(net.encoder_Bi_logsigma.weight).cpu().detach().numpy()
                 Bu_sigma = F.softplus(net.encoder_Bu_logsigma.weight).cpu().detach().numpy()
                 p, q = net.encoder_P_Q(dataset.train_enc_graph,

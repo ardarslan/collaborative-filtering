@@ -9,6 +9,9 @@ import torch.optim as optim
 from collections import OrderedDict
 
 class MetricLogger(object):
+    """
+    Logger class which is used to save loss information.
+    """
     def __init__(self, attr_names, parse_formats, save_path):
         self._attr_format_dict = OrderedDict(zip(attr_names, parse_formats))
         os.makedirs(str(Path(save_path).parent), exist_ok=True)
@@ -27,10 +30,16 @@ class MetricLogger(object):
 
 
 def torch_total_param_num(net):
+    """
+    Returns total number of parameters in the network.
+    """
     return sum([np.prod(p.shape) for p in net.parameters()])
 
 
 def torch_net_info(net, save_path=None):
+    """
+    Returns number of parameters of the network.
+    """
     info_str = 'Total Param Number: {}\n'.format(torch_total_param_num(net)) +\
                'Params:\n'
     for k, v in net.named_parameters():
@@ -73,6 +82,9 @@ def get_activation(act):
 
 
 def get_optimizer(opt):
+    """
+    Returns the optimizer which is used during training.
+    """
     if opt == 'sgd':
         return optim.SGD
     elif opt == 'adam':
@@ -86,6 +98,9 @@ def to_etype_name(rating):
 
 
 def prepare_submission_file(predictions, args):
+    """
+    Writes the predictions file to args.save_dir directory.
+    """
     sample_submission = pd.read_csv(f"{args.data_path}/sampleSubmission.csv", engine='python')
     id_column = sample_submission['Id']
     rs = id_column.apply(lambda x: int(x.split("_")[0].split("r")[-1])).tolist()
@@ -99,6 +114,9 @@ def prepare_submission_file(predictions, args):
 
 
 def extract_users_items_labels(data_pd):
+    """
+    Transforms raw training data into a processed Pandas Dataframe.
+    """
     users, movies = \
         [np.squeeze(arr) for arr in np.split(data_pd.Id.str.extract('r(\d+)_c(\d+)').values.astype(int) - 1, 2, axis=-1)]
     ratings = data_pd.Prediction.values
@@ -106,6 +124,10 @@ def extract_users_items_labels(data_pd):
 
 
 def plot_uncertainties(Bi_std, Bu_std, Q_std, P_std, preds_std, args):
+    """
+    Plots uncertainties in model predictions and model parameters. Saves the figures
+    to args.save_dir directory.
+    """
     Bi_std = Bi_std.ravel()
     Bu_std = Bu_std.ravel()
     Q_std = Q_std.mean(axis=1)
