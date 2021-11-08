@@ -53,3 +53,7 @@ Open a new terminal and verify that conda is installed.
 Predictions and uncertainty plots (if Bayesian mode is active) will be saved under the directory "save_dir".
 
 **Please refer to the README in src/baselines to reproduce the baseline results.**
+
+Some of this code was adapted from https://github.com/dmlc/dgl/tree/master/examples/pytorch/gcmc
+
+
